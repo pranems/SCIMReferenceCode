@@ -58,7 +58,7 @@
       "description": "Overall bundle and agent version, copied from the same-bundle VERSION file."
     },
     "type": "String",
-    "value": "14.0"
+    "value": "15.0"
   },
   "attributeTransforms": {
     "metadata": {

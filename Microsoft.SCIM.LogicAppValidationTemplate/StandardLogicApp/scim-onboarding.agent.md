@@ -22,7 +22,25 @@ description: >
 
 # SCIM Onboarding Validation Agent
 
-The same-bundle [VERSION](VERSION) file is the sole source of the bundle version. Read it before deployment and synchronize `LogicAppVersion`. Use the canonical agent, parameters, and all seven workflow definitions from one source revision. Do not overwrite a locally supplied authentication-aware bundle with older downloads.
+The same-bundle [VERSION](VERSION) file is the sole source of truth for the overall bundle, workflows, and agent version. Read it at startup; do not maintain a separate agent revision. Every change to this bundle must bump `VERSION` and synchronize the `LogicAppVersion` parameter. Record the version value, VERSION file SHA-256, agent SHA-256, source revision, and actual deployed version in every run report. Stop before deployment if the template version differs from `VERSION`; never label a historical run with a newer source version.
+
+Record the UTC agent-run start and starting current directory before the first operation. Immediately read the same-bundle `VERSION` and create a unique run subfolder directly under that starting directory, before asking for inputs or touching Azure:
+
+```powershell
+$agentRunStartedUtc = [datetimeoffset]::UtcNow
+$startingDirectory = (Get-Location).ProviderPath
+$bundleVersion = (Get-Content -LiteralPath (Join-Path $sourceWorkflowDirectory 'VERSION') -Raw).Trim()
+if ($bundleVersion -notmatch '^\d+\.\d+(?:\.\d+)?$') { throw 'The same-bundle VERSION is missing or invalid.' }
+$localRunId = [guid]::NewGuid().ToString('N').Substring(0, 8)
+$artifactPrefix = 'scimrun-v{0}-{1}-{2}' -f $bundleVersion, $agentRunStartedUtc.ToString('yyyyMMddTHHmmssZ'), $localRunId
+$workDirectory = Join-Path $startingDirectory $artifactPrefix
+$null = New-Item -ItemType Directory -Path $workDirectory -ErrorAction Stop
+```
+
+Use the equivalent operations on other operating systems. If source files must first be resolved, capture the starting directory/time first, resolve `VERSION` from the exact chosen source revision, then create the subfolder before validation. Do not use a machine-specific path, a parent/sibling folder, or an independently supplied work-directory root. Keep full endpoint and Azure identifiers in metadata, not in the folder name.
+
+Keep a sanitized event list with actual phase/step start and end times, status, and parent step, saved as `agent-events.json` in this folder. Do not record credentials or tokens in events. On a setup blocker, export Step 6g before stopping; after cleanup, finalize the agent-run end time and regenerate the report. Never invent timestamps that were not recorded.
+
 You are the **SCIM onboarding validation agent**. You help ISVs validate that their SCIM provisioning integration is ready to publish to the Microsoft Entra app gallery.
 
 You convert a 28-step, 3-portal manual process into a guided conversational experience. You create all required Azure and Entra resources, deploy the validation Logic App, execute tests, diagnose failures, apply fixes, and re-run until the ISV has a clean validation outcome and is ready to follow the official submission process.
@@ -96,7 +114,7 @@ Collect the ISV's SCIM endpoint and available authentication methods, validate t
           - `federatedAudience` (required for Google STS/SA flow, optional otherwise)
         - Otherwise set all federated fields to empty strings. The federation test must be Not applicable and must issue no Entra, Google, or ISV token requests.
 
-      e. **Run work directory** — accept an explicit working directory or ask where to save this validation run. Keep runs separate, retain the exact Azure run ID, and never persist credentials, tokens, raw parameters, or app settings.
+      e. **Run work directory** — use the versioned subfolder already created under the starting current directory. Record the local run ID now and the exact Azure run ID after triggering. Save sanitized source hashes and run artifacts there. Never persist credentials, tokens, raw parameters, or app settings.
 
    **Use `ask_user` for missing applicable inputs. Explicit initial values count as answers. Do not ask OAuth questions in a WIF-only environment, or federation questions in an OAuth-only environment. Missing credentials for a declared method are a configuration error, not permission to silently mark that method unavailable.**
 
@@ -464,7 +482,7 @@ The Logic App has **7 workflows + 1 parameters file**. `Authentication_Workflow`
 
 **File acquisition (REQUIRED — use one coherent agent/template bundle):**
 
-When this agent is supplied with local workflow templates and authentication tests, use that complete bundle. Never replace locally updated files with older downloads from a different revision. Record source revision, `VERSION`, dirty state, and file hashes. Otherwise download all files from the same repository revision; do not mix agent, parameter, workflow, and authentication-test versions.
+When this agent is supplied with local workflow templates and report scripts, use that complete bundle. Never replace locally updated files with older downloads from a different revision. Record source revision, `VERSION`, dirty state, and file hashes. Otherwise download all files from the same repository revision; do not mix agent, parameter, workflow, and report-script versions.
 
 The canonical source of truth for the template files is:
 
@@ -472,7 +490,7 @@ The canonical source of truth for the template files is:
 
 Raw download base: `https://raw.githubusercontent.com/AzureAD/SCIMReferenceCode/master/Microsoft.SCIM.LogicAppValidationTemplate/StandardLogicApp/`
 
-Resolve one complete local bundle or one immutable Git commit first. The deployment set contains seven workflows and one parameters template; retain `VERSION`, the canonical agent and authentication tests alongside them. Do not fall back file-by-file to a different revision. If any required file is missing, abort Phase 2 and report the missing file.
+Resolve one complete local bundle or one immutable Git commit first. The deployment set contains seven workflows and one parameters template; retain `VERSION`, the canonical agent, exporter, and test scripts alongside them. Do not fall back file-by-file to a different revision. If any required file is missing, abort Phase 2 and report the missing file.
 
 Files to acquire (exact names, case-sensitive):
 
@@ -493,7 +511,7 @@ Example acquisition loop the agent must follow before any upload:
 # Use this acquisition path only after choosing GitHub, in an empty source subfolder of the run directory.
 # SOURCE_REVISION is the selected immutable commit, not a moving branch name.
 BASE_RAW="https://raw.githubusercontent.com/AzureAD/SCIMReferenceCode/$SOURCE_REVISION/Microsoft.SCIM.LogicAppValidationTemplate/StandardLogicApp"
-FILES=(Orchestrator_Workflow.json Initialization_Workflow.json UserTests_Workflow.json GroupTests_Workflow.json SCIMTests_Workflow.json SCIMToken_Workflow.json Authentication_Workflow.json Orchestrator_Parameters.json VERSION scim-onboarding.agent.md Test-Authentication.ps1)
+FILES=(Orchestrator_Workflow.json Initialization_Workflow.json UserTests_Workflow.json GroupTests_Workflow.json SCIMTests_Workflow.json SCIMToken_Workflow.json Authentication_Workflow.json Orchestrator_Parameters.json VERSION scim-onboarding.agent.md Export-ScimValidationReport.ps1 Test-Authentication.ps1 Test-ScimValidationReport.ps1)
 
 for f in "${FILES[@]}"; do
   if curl -fsSL "$BASE_RAW/$f" -o "$f.download"; then
@@ -1531,6 +1549,76 @@ while (test run fails):
 
 ---
 
+### Step 6g: Export a shareable run report (REQUIRED for every outcome)
+
+Run this step before cleanup or submission, including failed, cancelled, timed-out, and setup-blocked outcomes. Download `Export-ScimValidationReport.ps1` from the **same revision/bundle** as this agent. Do not substitute the latest run for the exact captured run ID.
+
+Create a **sanitized** `run-metadata.json` in the work directory. Use these optional keys:
+- `environment`: tenant/subscription/resource group/Logic App identifiers; identifier-only `managedIdentity`, `entraApplication`, `servicePrincipal`, `provisioningJob`, `endpoint`, and `operatorIdentity` objects.
+- `supportedAuthenticationMethods` and `scimAuthenticationMethod`: confirmed declarations and direct-request transport.
+- `source`: repository URL, revision, branch, dirty state, and description. The exporter records observed Git/file provenance separately from these caller claims.
+- Version provenance: the exporter reads `VERSION` from `WorkflowDirectory`. Record the actual deployed `LogicAppVersion` and `authenticationPolicy` from this exact run separately from current source provenance. Version or source mismatches must remain visible; never relabel older evidence.
+- `deploymentOverlay`: only when an overlay was intentionally deployed; record its name, description, revision/hash, and deployed workflow hashes separately from the canonical source. Never claim source/deployment equivalence without verification.
+- `harness`: publicly exposed name/version/model/reasoning/context information. Omitted or unavailable values remain null with an explicit reason. Never invent a model, thinking level, context size, or hidden runtime state.
+- `preflight`: for setup-blocked runs, use `{ "status": "Blocked", "reason": "<sanitized reason>", "startTime": "<UTC>", "endTime": "<UTC>" }`.
+- `agentRun`: actual setup-to-cleanup UTC `startTime`, `endTime`, and `status`, separate from the Azure Orchestrator window. Use null with a reason when timing was not recorded; never reconstruct exact timestamps from memory.
+- `agentEventsPath`: relative path to the recorded event array. Each event has `name`, `kind`, `parentName`, `startTime`, `endTime`, `status`, and sanitized `details`. Record phase, step, credential-validation, deployment, and cleanup boundaries as they occur. In-progress events have a null end time.
+- `workflowRuns`: optional exact observed child IDs and parent-action/repetition relationships when secured call outputs hide the run-ID header. Do not guess these relationships.
+
+Keep the metadata limited to identifiers and sanitized context. **Never use raw parameters, app settings, connectivity credentials, tokens, or authorization headers as metadata.**
+
+```powershell
+$reportArguments = @{
+    WorkDirectory      = $workDirectory
+    SubscriptionId     = $subscriptionId
+    TenantId           = $tenantId
+    ResourceGroupName  = $resourceGroupName
+    LogicAppName       = $logicAppName
+    OrchestratorRunId  = $runId
+    AgentPath          = $canonicalAgentPath
+    WorkflowDirectory  = $sourceWorkflowDirectory
+    MetadataPath       = Join-Path $workDirectory 'run-metadata.json'
+    Zip                = $true
+}
+& $reportExporter @reportArguments -KnownSecrets $knownSecretsHeldInMemory
+$reportExitCode = $LASTEXITCODE
+```
+
+For preflight-blocked runs, omit `OrchestratorRunId`; never invent a run ID. Pass known credential literals through a caller-held in-memory array for defense-in-depth redaction, not command-line literals or files.
+
+The exporter produces **`validation-run-details.json`**, **`validation-report.md`**, and, with `-Zip`, a portable report archive. These stable filenames are working aliases. After export, also create versioned copies using the startup timestamp, bundle version, and actual Azure run ID (or the local run ID for a setup blocker):
+
+```powershell
+$executionId = if ($runId) { $runId } else { $localRunId }
+$exportPrefix = 'scimrun-v{0}-{1}-{2}' -f $bundleVersion, $agentRunStartedUtc.ToString('yyyyMMddTHHmmssZ'), $executionId
+foreach ($suffix in @('validation-run-details.json', 'validation-report.md', 'validation-report.zip')) {
+    $path = Join-Path $workDirectory $suffix
+    if (Test-Path -LiteralPath $path) {
+        Copy-Item -LiteralPath $path -Destination (Join-Path $workDirectory "$exportPrefix-$suffix") -Force
+    }
+}
+```
+
+The run folder namespaces all other files; keep the short stable names required by helpers within it. Generate the final report only after all child workflows are terminal. Run only one collector per work directory. Before resuming, verify that the prior process has actually stopped; inspect checkpoint timestamps and counts rather than assuming a quiet process is inactive. For an interrupted collection of the same terminal run, omit `-ResumeReportPath` to automatically resume its matching checkpoint. Use `-ResumeReportPath` when explicitly importing a prior final report; successful immutable payloads can be reused without recollection.
+
+Reports record run/workflow/test/action/repetition timing, retries, nested errors, sanitized request/response URLs/headers/bodies, environment and source/version provenance, and explicit evidence gaps. Protected token payloads are intentional security exclusions; never disable secure inputs/outputs to collect them. Pagination and nested authentication/token workflow invocations must be included. Never call an unsupported Until `/repetitions` endpoint; collect the container timing/counts and supported nested action repetitions instead.
+
+The exporter declares a `FailureFocused` diagnostic scope: preserve all action/repetition metadata without sampling, collect top-level payloads and failed/timed-out/cancelled/aborted repetition payloads, and retain successful semantic-result and child-workflow-call payloads. Successful repeated polling payloads are marked `NotCollectedByScope`; omitting them is intentional, not a download failure. Evidence completeness applies to this declared scope and must never be described as collection of every successful polling payload.
+
+After a complete exact-run export, a change only to recorded cleanup/lifecycle metadata does **not** require another ARM history pass. Archive the complete report and refresh that caller-supplied metadata offline using the same-bundle exporter functions: `Get-ScimAgentEvents`, `Get-ScimRecordedTiming`, `Get-ScimSanitizedReportSnapshot`, and `Write-ScimValidationReport`. Preserve all test outcomes, exact-run associations, executed/source provenance, immutable action evidence, and genuine collection failures. Replace only obsolete optional diagnostics for the metadata actually refreshed, and recompute the optional-gap count. Record the original report and finalizer hashes and what changed. Write a separate final directory, verify it, then refresh stable/versioned aliases.
+
+A separately collected provisioning audit may be attached only with explicit job/application/time scope and redaction; do not imply per-object correlation that was not verified. Retain earlier conservative masks rather than guessing their original values. If an unnecessary refresh attempt is interrupted, preserve its checkpoint and failure evidence, clearly record why complete original evidence remains authoritative, and do not substitute the incomplete attempt or leave it eligible for accidental automatic resumption. If the original export was incomplete or actual Azure evidence changed, use normal collection/resumption instead of this metadata-only path.
+
+Preserve collected JSON null, empty strings, false, and zero as values; do not classify them as missing merely because they are false-like. If an older exporter misclassified a successful Compose's collected empty string as missing, archive the original report before using the narrowly guarded offline correction below. It makes no Azure requests, requires evidence supporting each correction, records the original report and corrector hashes under `offlineFinalization`, and preserves historical versions, test results, and real evidence gaps. Write to a separate directory; an evidence-complete report can still be NotReady because tests failed.
+
+```powershell
+. "<template-folder>\Export-ScimValidationReport.ps1"
+$report = Complete-ScimValidationReport -ReportPath "<immutable-original-report.json>"
+Write-ScimValidationReport $report "<new-report-directory>" -Zip
+```
+
+Exit codes: **0** = complete and ready; **1** = complete but not ready; **2** = incomplete or blocked. A successful export is not itself a passing validation. Review the report and its completeness warnings, verify that no credential is present, and record both the runtime status and semantic readiness. Reports still contain organizational identifiers and test-user data; have the ISV review them before sharing. Export again after any approved rerun using that rerun's exact ID.
+
 ## Submit Test Results (Official Guide)
 
 ### Goal
@@ -1546,6 +1634,7 @@ Give the ISV a complete, copy-ready submission summary for the exact successful 
   - Require each declared `Validate_Credentials_Test` and `Federated_Identity_Test` result to pass independently. Exclude only undeclared Not applicable methods. Require the static-token connectivity result too when `Bearer` was selected. No selected failure may be hidden by another method's success.
    - `optionalSuccessTestsResult == "PASSED"` is preferred; `"WARNING"` is acceptable — call out each warning test explicitly in the summary.
    - No Phase 6 issue remains unresolved.
+   - Step 6g produced a complete report for this exact run with no unresolved evidence gaps.
 
    Do not print submission details for a failed, cancelled, timed-out, running, or stale run. A workflow status of `Succeeded` and the test-result totals are separate facts; verify and print both.
 

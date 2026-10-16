@@ -282,6 +282,28 @@ Assert-Equal $authenticationTests.Count 2 'The existing report inventory retains
 foreach ($test in $authenticationTests) {
     Assert-Equal $test.testCategory 'Declared/StrictSuccess' 'Each declared authentication test is individually strict'
 }
+$agentText = Get-Content -LiteralPath "$root\scim-onboarding.agent.md" -Raw
+$startup = [regex]::Match($agentText, '(?s)```powershell\r?\n(?<code>.*?)\r?\n```')
+Assert-Equal $startup.Success $true 'Canonical agent contains executable startup-folder instructions'
+$testDirectory = Join-Path ([IO.Path]::GetTempPath()) ('scim-startup-' + [guid]::NewGuid().ToString('N'))
+$null = New-Item -ItemType Directory -Path $testDirectory -ErrorAction Stop
+$createdDirectory = $null
+Push-Location -LiteralPath $testDirectory
+try {
+    $createdDirectory = & {
+        $sourceWorkflowDirectory = $root
+        & ([scriptblock]::Create($startup.Groups['code'].Value + "`n`$workDirectory"))
+    }
+    Assert-Equal (Split-Path -Parent $createdDirectory) $testDirectory 'Run folder is a direct child of the starting current directory'
+    $version = (Get-Content -LiteralPath "$root\VERSION" -Raw).Trim()
+    Assert-Equal ((Split-Path -Leaf $createdDirectory) -match ('^scimrun-v' + [regex]::Escape($version) + '-\d{8}T\d{6}Z-[a-f0-9]{8}$')) $true 'Run folder contains the actual VERSION, UTC start and unique local run ID'
+} finally {
+    Pop-Location
+    if ($createdDirectory -and (Test-Path -LiteralPath $createdDirectory)) {
+        Remove-Item -LiteralPath $createdDirectory -ErrorAction Stop
+    }
+    Remove-Item -LiteralPath $testDirectory -ErrorAction Stop
+}
 if (-not $orchestrator.definition.actions.Evaluate_Test_Results.inputs.overallLogicAppResult.Contains("not(equals(coalesce(body('Get_SCIMTests_Output_Content')?['authenticationModelResult'],'FAILED'),'PASSED'))")) {
     throw 'Orchestrator must reject missing or non-passing authentication readiness.'
 }
