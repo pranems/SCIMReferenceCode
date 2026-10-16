@@ -56,6 +56,25 @@ try {
     Assert-Report ($safeJson.Contains('application/json')) 'Allowlisted content-type retained'
     Assert-Report ($safeJson.Contains('PASSED')) 'Semantic result retained'
     Assert-Report ((ConvertTo-ScimCanonicalJson (Protect-ScimValue $safe @($secret))) -eq $safeJson) 'Repeated sanitization preserves already-redacted fixture content'
+    foreach ($embeddedJson in @(
+        '[]', '[null]', '[false]', '[0]', '[""]', '[{"result":"FAILED"}]',
+        '[[],[false]]', '{"empty":[],"results":[{"result":"FAILED"}]}'
+    )) {
+        $embeddedSafe = Protect-ScimValue @{ body = $embeddedJson }
+        Assert-Report ($embeddedSafe.body -ceq $embeddedJson) "Embedded JSON retains array shape and typed values: $embeddedJson"
+        Assert-Report ((Protect-ScimValue $embeddedSafe).body -ceq $embeddedJson) "Repeated sanitization retains embedded JSON shape: $embeddedJson"
+    }
+    $embeddedSecret = Protect-ScimValue @{ body = '[{"result":"FAILED","password":"fixture-array-password"}]' }
+    Assert-Report ($embeddedSecret.body -ceq '[{"password":"[REDACTED]","result":"FAILED"}]') 'Singleton embedded JSON arrays retain both their shape and credential redaction'
+    Assert-Report ((Get-ScimActionSecurityExclusionCount @()) -eq 0) 'An empty action inventory has no security exclusions'
+    $nestedExclusions = @(@{
+        securityExclusions = @(@{ source = 'inputs' })
+        repetitions = @(@{
+            securityExclusions = @(@{ source = 'outputs' })
+            repetitions = @(@{ securityExclusions = @(@{ source = 'inputs' }, @{ source = 'outputs' }) })
+        })
+    })
+    Assert-Report ((Get-ScimActionSecurityExclusionCount $nestedExclusions) -eq 4) 'Security exclusion counting retains multiple repetition levels without counting absent collections'
     $prose = 'Acquire an ARM token for the selected tenant.'
     Assert-Report ((Protect-ScimText $prose) -eq $prose) 'Harmless token-for prose is not treated as a credential assignment'
     $maskedUrl = 'https://sample.azure.com/path?[REDACTED QUERY]'
@@ -90,6 +109,18 @@ try {
         $diagnosticLogs.provisioningLogs.errorCode -eq 'SystemForCrossDomainIdentityManagementServiceIncompatible') 'Nested provisioning diagnostics retain HTTP400, invalidSyntax and structured errorCode'
     Assert-Report (-not $diagnosticLogs.provisioningLogs.reason.Contains('fixture-oauth-code') -and
         -not $diagnosticLogs.provisioningLogs.reason.Contains('fixture-other-code')) 'OAuth code assignments are still redacted beside retained provisioning diagnostics'
+    foreach ($embeddedCode in @(
+        '{"code":"fixture-embedded-oauth-code","errorCode":"invalidSyntax","statusCode":400}',
+        '[{"code":"fixture-embedded-oauth-code","errorCode":"invalidSyntax","statusCode":400}]',
+        '{"outer":"{\"code\":\"fixture-embedded-oauth-code\",\"errorCode\":\"invalidSyntax\",\"statusCode\":400}"}'
+    )) {
+        $safeCode = Protect-ScimValue @{ body = $embeddedCode }
+        Assert-Report (-not $safeCode.body.Contains('fixture-embedded-oauth-code') -and $safeCode.body.Contains('[REDACTED]')) 'Embedded JSON cannot bypass textual OAuth-code redaction'
+        Assert-Report ($safeCode.body.Contains('invalidSyntax') -and $safeCode.body.Contains('400')) 'Embedded JSON retains diagnostic errorCode and statusCode values beside a redacted OAuth code'
+        Assert-Report ((Protect-ScimValue $safeCode).body -ceq $safeCode.body) 'Embedded OAuth-code redaction remains idempotent'
+    }
+    $structuredDiagnostic = Protect-ScimValue @{ error = @{ code = 'FixtureDiagnostic' }; statusCode = 400 }
+    Assert-Report ($structuredDiagnostic.error.code -ceq 'FixtureDiagnostic' -and $structuredDiagnostic.statusCode -eq 400) 'Typed runtime diagnostic codes remain intact outside embedded JSON text'
     Assert-Report ((Protect-ScimValue @{ message = 'ordinary failure'; result = 'FAILED' }).message -eq 'ordinary failure') 'Ordinary error retained'
     Assert-Report ((ConvertTo-ScimCanonicalJson @{ z = 2; a = @{ b = 3; a = 1 } }) -eq (ConvertTo-ScimCanonicalJson @{ a = @{ a = 1; b = 3 }; z = 2 })) 'Canonical key ordering'
     $authCalls = [System.Collections.Generic.List[object]]::new()
@@ -474,7 +505,7 @@ try {
     # A self-contained source repository proves provenance without depending on parent edits.
     & git -C $fixtureDirectory init --quiet
     & git -C $fixtureDirectory add --all
-    & git -C $fixtureDirectory -c user.name=Fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false commit --quiet -m 'Offline reporting fixture'
+    & git -C $fixtureDirectory -c maintenance.auto=false -c user.name=Fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false commit --quiet -m 'Offline reporting fixture'
     if ($LASTEXITCODE -ne 0) { throw 'Fixture Git initialization failed.' }
 
     $state = @{
@@ -606,6 +637,7 @@ try {
     Assert-Report (@($report.workflows | Where-Object runId -eq 'exact-auth-1')[0].timing.durationMilliseconds -eq 2000) 'Nested child timing collected'
     Assert-Report (@($report.workflows | Where-Object runId -eq 'exact-auth-1')[0].run.properties.error.code -eq 'RetryObserved') 'Nested child error retained safely'
     Assert-Report ($report.completeness.securityExcludedCount -gt 0 -and $report.securityExclusions.Count -eq 1) 'Secured child evidence is excluded, not falsely incomplete'
+    Assert-Report ($report.completeness.securityExcludedCount -eq 15) 'Security exclusion total includes ten top-level payload exclusions, four protected repetition payloads and one hidden child mapping'
     Assert-Report ($report.suppliedSource.metadata.revision -eq 'caller-source-revision' -and $report.provenance.sourceGit.revision -ne 'caller-source-revision') 'Caller source claims do not override observed source revision'
     Assert-Report ($report.deploymentOverlay.metadata.workflowHashes[0].sha256 -eq ('b' * 64)) 'Allowlisted deployment-overlay hashes retained'
     Assert-Report ($report.provenance.agent.sha256 -eq (Get-FileHash $agentPath).Hash.ToLowerInvariant()) 'Agent SHA256'

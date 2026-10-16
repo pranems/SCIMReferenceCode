@@ -61,6 +61,9 @@ protection, or turn missing required evidence into success.
 | Parent/child evidence | Keep exact verified associations; label weaker correlation claims. |
 | Hidden runtime/model settings | Null plus a reason, not guessed values. |
 | Typed null, empty string, false, zero | Preserve collected values rather than treating false-like values as missing. |
+| JSON arrays embedded in strings | Preserve empty/singleton arrays and nested typed values while recursively redacting their contents. |
+| OAuth `code` assignments in embedded JSON text | Apply the same conservative masking as textual logs, without matching diagnostic `statusCode` or `errorCode` fields. Typed runtime diagnostic codes remain intact. |
+| Protected action/repetition payloads | Count recorded security exclusions across triggers, actions, and every repetition level, separately from hidden child mappings and evidence gaps. |
 
 Azure runtime status, semantic test result, authentication result, evidence
 completeness, and gallery readiness are different facts. A successful export
@@ -89,6 +92,12 @@ Completeness is defined within that declared scope.
 An empty JSON string is present evidence, not evidence that a download
 failed. A protected token is a security exclusion, not a request to remove
 security settings. Neither correction changes functional test results.
+
+Offline regression review also corrected embedded JSON array unwrapping,
+an embedded-JSON bypass of textual OAuth-code masking, and an exclusion-summary
+undercount that omitted protected repetitions. These fixes affect newly
+generated reports only; frozen reports and their original counts, hashes,
+versions, and outcomes must not be rewritten.
 
 ## Verification and limits
 

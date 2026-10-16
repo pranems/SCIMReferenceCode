@@ -166,23 +166,24 @@ function Test-ScimSensitiveKey {
 }
 
 function Protect-ScimValue {
-    param($Value, [string[]] $Secrets = @(), [string] $Name = '', [int] $Depth = 0)
+    param($Value, [string[]] $Secrets = @(), [string] $Name = '', [int] $Depth = 0, [switch] $RedactCode)
     if ($Depth -gt 80) { return '[OMITTED: depth limit]' }
-    if ((Test-ScimSensitiveKey $Name) -and $Name -ne 'rawCredentialsPersisted') { return '[REDACTED]' }
+    if (((Test-ScimSensitiveKey $Name) -and $Name -ne 'rawCredentialsPersisted') -or ($RedactCode -and $Name -eq 'code')) { return '[REDACTED]' }
     if ($null -eq $Value) { return $null }
     if ($Value -is [string]) {
         $s = Protect-ScimText $Value $Secrets
         $trimmed = $Value.Trim()
         if ($trimmed.StartsWith('{') -or $trimmed.StartsWith('[') -or $trimmed.StartsWith('"')) {
             try {
-                $embedded = ConvertFrom-Json -InputObject $Value -AsHashtable -ErrorAction Stop
-                return (Protect-ScimValue $embedded $Secrets '' ($Depth + 1) | ConvertTo-Json -Depth 100 -Compress)
+                $embedded = ConvertFrom-Json -InputObject $Value -AsHashtable -NoEnumerate -ErrorAction Stop
+                # Parsing embedded text must not bypass its conservative OAuth-code masking.
+                return (Protect-ScimValue $embedded $Secrets '' ($Depth + 1) -RedactCode | ConvertTo-Json -Depth 100 -Compress)
             } catch { }
         }
         # Encoded form bodies and error strings often carry JSON or secrets one layer down.
         if ($s -match '%[0-9a-fA-F]{2}') {
             $decoded = [uri]::UnescapeDataString($s)
-            if ($decoded -ne $s) { return Protect-ScimValue $decoded $Secrets '' ($Depth + 1) }
+            if ($decoded -ne $s) { return Protect-ScimValue $decoded $Secrets '' ($Depth + 1) -RedactCode:$RedactCode }
         }
         return $s
     }
@@ -196,13 +197,13 @@ function Protect-ScimValue {
             if ($Name -match '(?i)headers$' -and $k -notmatch '^(?i:content-type|content-length|date|retry-after|x-ms-request-id|x-ms-correlation-request-id|x-ms-client-tracking-id|x-ms-workflow-run-id|traceparent)$') {
                 $result[$safeKey] = '[REDACTED: non-allowlisted header]'
             } else {
-                $result[$safeKey] = Protect-ScimValue $Value[$k] $Secrets ([string]$k) ($Depth + 1)
+                $result[$safeKey] = Protect-ScimValue $Value[$k] $Secrets ([string]$k) ($Depth + 1) -RedactCode:$RedactCode
             }
         }
         return $result
     }
     if ($Value -is [System.Collections.IEnumerable]) {
-        return ,@($Value | ForEach-Object { Protect-ScimValue $_ $Secrets '' ($Depth + 1) })
+        return ,@($Value | ForEach-Object { Protect-ScimValue $_ $Secrets '' ($Depth + 1) -RedactCode:$RedactCode })
     }
     return $Value
 }
@@ -639,6 +640,16 @@ function Get-ScimInvocationEvidence {
         $path = if ($RepetitionPath) { "$RepetitionPath/$($repetition.name)" } else { [string]$repetition.name }
         Get-ScimInvocationEvidence $repetition $path
     }
+}
+
+function Get-ScimActionSecurityExclusionCount {
+    param($Entries)
+    $count = 0
+    foreach ($entry in $Entries) {
+        $count += @($entry.securityExclusions | Where-Object { $null -ne $_ }).Count
+        $count += Get-ScimActionSecurityExclusionCount $entry.repetitions
+    }
+    return $count
 }
 
 function Select-ScimMetadataFields {
@@ -1104,7 +1115,10 @@ function New-ScimValidationReport {
     $report.evidenceFailures = @($ctx.failures)
     $missing = @($ctx.failures | Where-Object required).Count
     $report.securityExclusions = @($ctx.securityExclusions)
-    $securedPayloadCount = @($report.workflows | ForEach-Object { $_.actions | ForEach-Object { $_.securityExclusions } }).Count
+    $securedPayloadCount = 0
+    foreach ($workflow in $report.workflows) {
+        $securedPayloadCount += Get-ScimActionSecurityExclusionCount (@($workflow.triggers) + @($workflow.actions))
+    }
     $report.completeness = @{
         complete = $missing -eq 0; requiredUnavailableCount = $missing
         optionalUnavailableCount = @($ctx.failures | Where-Object { -not $_.required }).Count
