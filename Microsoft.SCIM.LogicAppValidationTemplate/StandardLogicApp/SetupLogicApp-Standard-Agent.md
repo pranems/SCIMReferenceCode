@@ -434,19 +434,39 @@ The agent clears undeclared credentials and reports those tests as
 declared method must be supplied or reported as blocked; they are not
 silently treated as an unsupported method.
 
-### Authentication readiness
+### Authentication readiness and run evidence
 
 Every selected authentication method must pass its own test (AND).
-Selecting both OAuth and WIF requires both to pass; a selected failure,
-skip, or missing result blocks authentication readiness. An undeclared
-method is Not applicable and issues no authentication requests.
-Other mandatory functional failures remain independent readiness gates.
+Selecting both OAuth and WIF requires both to pass; one passing method
+cannot hide a selected failure, skipped result, or missing result.
+Other mandatory functional failures still prevent readiness.
+For example, a WIF-only integration with a passing federation test and
+no OAuth endpoint is authentication-ready; OAuth is Not applicable.
 
-Use one coherent bundle: seven workflows, the complete parameters file,
-the canonical agent, authentication tests, and [VERSION](VERSION).
-Keep `LogicAppVersion` synchronized with VERSION. This change does not
-require a portable report exporter; reporting is a separate follow-up.
-See [Authentication-Changes.md](Authentication-Changes.md).
+Use one coherent agent/template bundle: seven workflows, the complete
+parameters file, `VERSION`, and the report exporter from the same source revision.
+Do not replace locally updated templates with older downloads.
+
+The [VERSION](VERSION) file is the sole overall and agent version.
+Bump it for each bundle change and keep `LogicAppVersion` synchronized.
+Before asking for inputs, the agent creates a unique subfolder under
+its starting current directory, for example
+`scimrun-v15.0-20261016T170000Z-a1b2c3d4`. The short name includes the
+version, UTC start time, and local run ID; metadata records full Azure
+identifiers. Final shareable filenames also include the exact Azure
+run ID. Stable helper filenames remain available within that folder.
+
+For every outcome, including setup blockers, the agent exports a
+sanitized **`validation-run-details.json`** and human-readable report in
+the run work directory, with an optional portable archive. These include
+the exact run ID, source/deployed version, source/deployment hashes, selected authentication
+methods, timings, environment/operator identifiers, failure diagnostics,
+and explicit evidence gaps. Token payloads remain protected. Unexposed
+model, reasoning, and context settings are recorded as unavailable.
+Review the artifacts before sharing because organizational identifiers
+and test-user data may remain. See the
+[canonical agent's report step](scim-onboarding.agent.md#step-6g-export-a-shareable-run-report-required-for-every-outcome).
+
 ### Question 4: Azure Subscription Selection
 
 > “Which Azure subscription would you like to use?”

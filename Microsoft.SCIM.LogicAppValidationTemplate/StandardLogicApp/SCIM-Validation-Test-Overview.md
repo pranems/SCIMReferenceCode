@@ -177,17 +177,29 @@ This applies to: Create_Group, Update_Group, Group_Update_Add_Member, Group_Upda
 | Group tests `FAILED` (no Group schema) | **Failed** | Must add Group support to SCIM endpoint |
 | Any mandatory test `FAILED` | **Failed** | Must fix failing test(s) before submission |
 
-## Authentication regression checks
+## Shareable evidence and regression checks
 
-Run `.\Test-Authentication.ps1` after changing authentication behavior.
-The suite evaluates the actual workflow expressions and direct-request
-token-cache wiring. Live federation still requires a federation-capable
-environment; offline exchange parity is not a live authentication result.
+The [canonical agent](scim-onboarding.agent.md) creates a version/timestamp/local-ID subfolder under its starting current directory before validation. It records VERSION and source hashes, selected methods, and setup-step timings. Its report step uses [Export-ScimValidationReport.ps1](Export-ScimValidationReport.ps1) to produce `validation-run-details.json`, `validation-report.md`, and an optional portable archive for the **exact** run ID, plus versioned shareable copies.
 
-See [Authentication-Changes.md](Authentication-Changes.md) for the design
-and the boundary between authentication readiness and functional readiness.
+Evidence includes UTC workflow/test/action/repetition timings, nested failures and retries, sanitized HTTP requests/responses, source/deployment provenance, and environment/operator identifiers. Protected token payloads remain excluded. Unavailable runtime/model information and missing evidence are explicitly reported, never guessed. Review the artifacts before sharing: redaction removes credentials, not all organizational identifiers or test-user data.
+
+Generate the final report after the exact Orchestrator run and its child workflows have reached terminal states. A report collected while the run is active is an incomplete snapshot, not a final readiness result. Detailed evidence collection can take longer than a short Azure CLI access-token lifetime; collection failures must remain visible until the missing evidence has been retrieved successfully.
+
+To resume an interrupted collection, stop or verify completion of the previous process and rerun the same exact-run invocation without `-ResumeReportPath`; the matching sanitized checkpoint is loaded automatically. To import a prior final report explicitly, add `-ResumeReportPath "$WorkDirectory\validation-run-details.json"`. The exporter reuses successful sanitized terminal payloads, refreshes metadata, and retries missing evidence. Run only one collector per work directory. Resuming does not turn missing evidence into a pass. Until-loop history uses the container timing/counts and supported nested action repetitions rather than an unsupported loop repetition endpoint.
+
+Run the dependency-free PowerShell regressions after changes:
+
+```powershell
+.\Test-Authentication.ps1
+.\Test-ScimValidationReport.ps1
+```
+
+The authentication suite evaluates the actual workflow expressions, including OAuth-only, WIF-only, alternative-method failures, legacy inference, non-authentication failures, and every direct SCIM request's cache/transport wiring. Live WIF testing still requires a WIF-capable environment; offline exchange parity is not a live authentication result.
+
+For reporting scope, provenance, data transformations, and root-cause analysis, see [Validation reporting changes](Validation-Reporting-Changes.md). The prerequisite authentication behavior is documented separately in [Authentication changes](Authentication-Changes.md).
 
 ---
+
 ## How to Run
 
 ### Method A: AI Agent (Automated, 30–60 min)

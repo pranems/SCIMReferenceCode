@@ -25,9 +25,11 @@ The authentication readiness policy is **AND across selected methods**: every de
 
 For OAuth-only or federation-only runs, set `scimBearerToken` to `""`. The shared token workflow acquires access tokens, and each test suite refreshes its cache before expiry. There is no static-token fallback. Sending an OAuth access token in an HTTP Bearer header does not mean the endpoint supports caller-supplied static tokens. Entra provisioning connectivity is configured and validated separately with the supported method.
 
+At startup the agent creates a unique version/timestamp/run-ID subfolder directly under its starting current directory. Every run, including setup-blocked runs, exports `validation-run-details.json`, a Markdown summary, and optionally a portable archive using [Export-ScimValidationReport.ps1](StandardLogicApp/Export-ScimValidationReport.ps1), with versioned shareable copies. These contain exact-run timing, source/deployed version, deployment provenance, environment/operator context, and sanitized diagnostics with explicit evidence gaps. Tokens and credentials remain protected; unexposed model/runtime settings are not invented. Review reports before sharing because organizational identifiers and test-user data may remain.
+
 See the [Standard setup walkthrough](StandardLogicApp/SetupLogicApp-Standard-Agent.md) and [test overview](StandardLogicApp/SCIM-Validation-Test-Overview.md) for the current behavior. The generic legacy test descriptions below do not override the Standard authentication contract.
 
-The [authentication change guide](StandardLogicApp/Authentication-Changes.md) explains capability selection, token transport, workflow limits, and verification boundaries. Portable reporting is a separate follow-up change.
+The [authentication change guide](StandardLogicApp/Authentication-Changes.md) describes the prerequisite authentication change. The [validation-reporting guide](StandardLogicApp/Validation-Reporting-Changes.md) describes this dependent reporting change, evidence scope, provenance, data transformations, and limitations.
 
 ---
 
